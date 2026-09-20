@@ -63,6 +63,16 @@ func human_play(card: Card) -> void:
 	_apply(Move.play(human_seat, card))
 
 
+## Called by the view when the human clicks the announce button. Announcing
+## does not use up the turn: the human still has to play a card afterwards.
+func human_announce() -> void:
+	if _busy or state == null or state.finished:
+		return
+	if state.current_player != human_seat:
+		return
+	_apply(Move.announce(human_seat))
+
+
 func _advance() -> void:
 	if state.finished:
 		dealer = state.next_player(dealer)

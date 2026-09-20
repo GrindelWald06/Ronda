@@ -4,6 +4,9 @@ extends RefCounted
 ## function can be called freely from the engine, the UI or the AI.
 
 const WIN_SCORE := 41
+const TRINGLA_POINTS := 5
+## Penalty for hiding a ronda that comes to light later in the deal.
+const HIDDEN_RONDA_PENALTY := 5
 const MIN_PLAYERS := 2
 const MAX_PLAYERS := 4
 
@@ -44,6 +47,29 @@ static func find_capture(played: Card, table: Array[Card]) -> Array[Card]:
 		taken.append(by_order[o])
 		o += 1
 	return taken
+
+
+# ---------------------------------------------------------------------------
+# Announcements
+# ---------------------------------------------------------------------------
+
+## The announcement a hand allows: a tringla if it holds three of a kind,
+## otherwise a ronda for its highest pair. Returns null when the hand has
+## neither. (A tringla replaces the ronda it also contains.)
+static func find_announcement(seat: int, hand: Array[Card]) -> Announcement:
+	var counts := {}
+	for c in hand:
+		counts[c.rank] = counts.get(c.rank, 0) + 1
+	var pair_rank := 0   # 0 = no pair found yet
+	for rank in counts:
+		var n: int = counts[rank]
+		if n >= 3:
+			return Announcement.new(seat, Announcement.Kind.TRINGLA, rank)
+		if n == 2 and Card.RANK_ORDER.find(rank) > Card.RANK_ORDER.find(pair_rank):
+			pair_rank = rank
+	if pair_rank != 0:
+		return Announcement.new(seat, Announcement.Kind.RONDA, pair_rank)
+	return null
 
 
 # ---------------------------------------------------------------------------

@@ -2,9 +2,9 @@ class_name CardView
 extends Control
 ## On-screen representation of one Card.
 ##
-## The face is drawn in code (rank, suit shape, colors) so the game runs with
-## no image assets. To use real artwork later, replace _draw_face() and
-## _draw_back() with draw_texture_rect() calls; nothing else has to change.
+## Card faces and the back come from CardTextures (res://assets/cards/). If an
+## image is missing, the card is drawn in code instead (rank, suit shape,
+## colors), so the game always runs.
 ##
 ## CardView knows nothing about the rules. It reports clicks and hovering
 ## through signals and lets GameTable decide what they mean.
@@ -12,7 +12,10 @@ extends Control
 signal pressed(view: CardView)
 signal hover_changed(view: CardView, is_hovered: bool)
 
-const CARD_SIZE := Vector2(84, 120)
+## Cards are CARD_HEIGHT pixels tall. The width follows the aspect ratio of the
+## artwork (see update_card_size_from_artwork), so images are never stretched.
+const CARD_HEIGHT := 130.0
+static var card_size := Vector2(91.0, 130.0)
 const HOVER_LIFT := 10.0
 const FACE_COLOR := Color(0.97, 0.94, 0.86)
 const SUIT_COLORS: Array[Color] = [
@@ -60,14 +63,23 @@ var _highlight_style: StyleBoxFlat
 func _init(p_card: Card = null, p_face_up: bool = true) -> void:
 	card = p_card
 	face_up = p_face_up
-	custom_minimum_size = CARD_SIZE
-	size = CARD_SIZE
+	custom_minimum_size = card_size
+	size = card_size
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	_face_style = _make_style(FACE_COLOR, Color(0.25, 0.20, 0.15), 2, 8, true, true)
 	_back_style = _make_style(Color(0.15, 0.25, 0.50), Color(0.95, 0.95, 0.95), 2, 8, true, true)
 	_back_inner_style = _make_style(Color.WHITE, Color(0.85, 0.70, 0.30), 2, 5, false, false)
 	_highlight_style = _make_style(Color.WHITE, Color(1.0, 0.85, 0.15), 4, 10, false, false)
 	mouse_entered.connect(_on_mouse_entered)
 	mouse_exited.connect(_on_mouse_exited)
+
+
+## Call once before creating any CardView: sizes cards to match back.PNG.
+static func update_card_size_from_artwork() -> void:
+	var back := CardTextures.back()
+	if back == null:
+		return
+	card_size = Vector2(CARD_HEIGHT * back.get_width() / back.get_height(), CARD_HEIGHT)
 
 
 ## Smoothly slides the card to `target` (in its parent's coordinates).
@@ -130,6 +142,10 @@ func _draw() -> void:
 
 
 func _draw_face(rect: Rect2) -> void:
+	var texture := CardTextures.face(card)
+	if texture != null:
+		_draw_artwork(texture, rect)
+		return
 	draw_style_box(_face_style, rect)
 	var color: Color = SUIT_COLORS[card.suit]
 	var font := get_theme_default_font()
@@ -146,6 +162,10 @@ func _draw_face(rect: Rect2) -> void:
 
 
 func _draw_back(rect: Rect2) -> void:
+	var texture := CardTextures.back()
+	if texture != null:
+		_draw_artwork(texture, rect)
+		return
 	draw_style_box(_back_style, rect)
 	draw_style_box(_back_inner_style, rect.grow(-7.0))
 	var c := rect.get_center()
@@ -153,6 +173,11 @@ func _draw_back(rect: Rect2) -> void:
 		c + Vector2(0.0, -22.0), c + Vector2(16.0, 0.0),
 		c + Vector2(0.0, 22.0), c + Vector2(-16.0, 0.0),
 	]), Color(0.85, 0.70, 0.30))
+
+
+func _draw_artwork(texture: Texture2D, rect: Rect2) -> void:
+	draw_rect(Rect2(rect.position + Vector2(2.0, 3.0), rect.size), Color(0.0, 0.0, 0.0, 0.25))
+	draw_texture_rect(texture, rect, false)
 
 
 ## Simple placeholder pictograms for the four suits.

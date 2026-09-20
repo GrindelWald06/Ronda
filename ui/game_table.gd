@@ -30,6 +30,8 @@ var _card_layer: Control
 var _status_label: Label
 var _detail_label: Label
 var _new_round_button: Button
+var _announce_button: Button
+var _score_label: Label
 var _talon_view: CardView
 var _talon_label: Label
 var _pile_views: Array[CardView] = []   # indexed by side (= seat with 2 players)
@@ -46,6 +48,7 @@ var _presentation_id: int = 0
 
 
 func _ready() -> void:
+	CardView.update_card_size_from_artwork()
 	_build_ui()
 
 	controller = GameController.new()
@@ -95,11 +98,18 @@ func _build_ui() -> void:
 	_status_label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_detail_label = _make_label(18, HORIZONTAL_ALIGNMENT_CENTER)
+	_detail_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_score_label = _make_label(16, HORIZONTAL_ALIGNMENT_LEFT)
 
 	_new_round_button = Button.new()
 	_new_round_button.text = "New round"
 	_new_round_button.pressed.connect(_on_new_round_pressed)
 	add_child(_new_round_button)
+
+	_announce_button = Button.new()
+	_announce_button.visible = false
+	_announce_button.pressed.connect(_on_announce_pressed)
+	add_child(_announce_button)
 
 
 func _make_label(font_size: int, align: HorizontalAlignment) -> Label:
@@ -126,7 +136,7 @@ func _on_resized() -> void:
 func _layout(animate: bool) -> void:
 	var w := size.x
 	var h := size.y
-	var card_size := CardView.CARD_SIZE
+	var card_size := CardView.card_size
 	var row_width := w - 2.0 * SIDE_MARGIN
 	_place_row(_opponent_views, w / 2.0, TOP_MARGIN, row_width, animate)
 	_place_row(_table_views, w / 2.0, _table_y(), row_width, animate)
@@ -144,8 +154,12 @@ func _layout(animate: bool) -> void:
 	_status_label.position = Vector2(SIDE_MARGIN, _table_y() - 76.0)
 	_status_label.size = Vector2(row_width, 68.0)
 	_detail_label.position = Vector2(SIDE_MARGIN, _table_y() + card_size.y + 12.0)
-	_detail_label.size = Vector2(row_width, 28.0)
+	_detail_label.size = Vector2(row_width, 56.0)
 	_new_round_button.position = Vector2(24.0, TOP_MARGIN)
+	_score_label.position = Vector2(24.0, TOP_MARGIN + 46.0)
+	_score_label.size = Vector2(150.0, 70.0)
+	_announce_button.size = Vector2(180.0, 44.0)
+	_announce_button.position = Vector2(w / 2.0 - 340.0, _human_y() + card_size.y / 2.0 - 22.0)
 
 
 ## Lays `views` out in one horizontal row centred on `center_x`. When the row
@@ -156,7 +170,7 @@ func _place_row(
 	var count := views.size()
 	if count == 0:
 		return
-	var card_width := CardView.CARD_SIZE.x
+	var card_width := CardView.card_size.x
 	var gap := card_width + 14.0
 	if count > 1:
 		gap = minf(gap, (max_width - card_width) / float(count - 1))
@@ -167,11 +181,11 @@ func _place_row(
 
 
 func _table_y() -> float:
-	return (size.y - CardView.CARD_SIZE.y) / 2.0
+	return (size.y - CardView.card_size.y) / 2.0
 
 
 func _human_y() -> float:
-	return size.y - CardView.CARD_SIZE.y - BOTTOM_MARGIN
+	return size.y - CardView.card_size.y - BOTTOM_MARGIN
 
 
 func _talon_position() -> Vector2:
@@ -179,7 +193,7 @@ func _talon_position() -> Vector2:
 
 
 func _pile_position(side: int) -> Vector2:
-	var x := size.x - CardView.CARD_SIZE.x - 24.0
+	var x := size.x - CardView.card_size.x - 24.0
 	return Vector2(x, _human_y() if side == HUMAN_SEAT else TOP_MARGIN)
 
 
@@ -195,6 +209,7 @@ func _on_round_started() -> void:
 	_presentation_id += 1
 	var id := _presentation_id
 	_input_enabled = false
+	_announce_button.hide()
 	_clear_views()
 	_status_label.text = "Dealing..."
 	_detail_label.text = ""
@@ -217,6 +232,7 @@ func _on_awaiting_human() -> void:
 	_status_label.text = "Your turn: click a card to play it."
 	for view in _human_views:
 		view.interactive = true
+	_update_announce_button()
 
 
 ## Animates one applied move. The RoundState has already advanced (it may even
@@ -225,10 +241,28 @@ func _on_move_applied(result: MoveResult) -> void:
 	var id := _presentation_id
 	var state := controller.state
 	_input_enabled = false
+	_announce_button.hide()
 	_clear_highlights()
 	for view in _human_views:
 		view.interactive = false
+
+	# An announcement uses no card: show it, then hand the turn back.
+	if result.kind == Move.Type.ANNOUNCE:
+		var verb := "announce" if result.player == HUMAN_SEAT else "announces"
+		_status_label.text = "%s %s %s!" % [
+			_seat_name(result.player), verb, result.announcement.kind_name()
+		]
+		_detail_label.text = ""
+		await _wait(0.9)
+		if id != _presentation_id:
+			return
+		controller.presentation_finished()
+		return
+
 	_detail_label.text = _describe_move(result)
+	var awards_text := _describe_awards(result)
+	if not awards_text.is_empty():
+		_detail_label.text += "\n" + awards_text
 
 	var played_view := _take_from_hand(result.player, result.played)
 	if played_view == null:
@@ -322,8 +356,34 @@ func _on_hand_card_pressed(view: CardView) -> void:
 	if not _input_enabled:
 		return
 	_input_enabled = false
+	_announce_button.hide()
 	_clear_highlights()
 	controller.human_play(view.card)
+
+
+func _on_announce_pressed() -> void:
+	if not _input_enabled:
+		return
+	_input_enabled = false
+	_announce_button.hide()
+	for view in _human_views:
+		view.interactive = false
+	_clear_highlights()
+	controller.human_announce()
+
+
+## Shows the announce button only when the human may announce right now.
+func _update_announce_button() -> void:
+	var announcement := controller.state.available_announcement(HUMAN_SEAT)
+	_announce_button.visible = _input_enabled and announcement != null
+	if announcement == null:
+		return
+	_announce_button.text = "Announce %s" % announcement.kind_name()
+	_announce_button.tooltip_text = (
+		"Scores points but tells your opponent you hold a pair.\n"
+		+ "If you hide it and later play both cards, you lose %d points."
+		% RondaRules.HIDDEN_RONDA_PENALTY
+	)
 
 
 ## Hovering a card in your hand outlines the table cards it would capture.
@@ -405,6 +465,9 @@ func _update_hud() -> void:
 		var won := state.cards_won(side)
 		_pile_views[side].visible = won > 0
 		_pile_labels[side].text = "%s: %d cards" % [_seat_name(side), won]
+	_score_label.text = "Points this round\nYou: %d\nOpponent: %d" % [
+		state.round_points[HUMAN_SEAT], state.round_points[OPPONENT_SEAT]
+	]
 
 
 func _seat_name(seat: int) -> String:
@@ -422,6 +485,13 @@ func _describe_move(result: MoveResult) -> String:
 	if result.cleared_table and not result.was_last_hand:
 		text += " Missa!"
 	return text
+
+
+func _describe_awards(result: MoveResult) -> String:
+	var parts := PackedStringArray()
+	for award in result.awards:
+		parts.append("%s: %s +%d" % [award.reason, _seat_name(award.side), award.points])
+	return "    ".join(parts)
 
 
 func _wait(seconds: float) -> void:

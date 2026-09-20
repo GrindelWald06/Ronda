@@ -9,8 +9,19 @@ extends RefCounted
 var ok: bool = true
 var error: String = ""
 
+## Move.Type.PLAY or Move.Type.ANNOUNCE.
+var kind: int = Move.Type.PLAY
 var player: int = -1
+
+## PLAY moves: the card that was played.
 var played: Card
+## ANNOUNCE moves: what was announced.
+var announcement: Announcement
+
+## Points scored by this move (announcements are settled once every player has
+## played their first card of the deal; a hidden ronda is penalised the moment
+## it comes to light).
+var awards: Array[PointAward] = []
 
 ## True if the played card paired with a table card.
 var was_capture: bool = false

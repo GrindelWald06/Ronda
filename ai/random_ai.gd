@@ -1,23 +1,24 @@
 class_name RandomAI
-extends AIPlayer
-## "Easy" opponent: plays a capturing card whenever it has one, otherwise a
-## random card. It always announces.
+extends RefCounted
+## First, very simple opponent. Any future AI only has to provide the same
+## method, choose_move(state, rng) -> Move, to be a drop-in replacement in
+## GameController.
+##
+## Keep in mind that choose_move() is called again after an ANNOUNCE move (the
+## announcement does not use up the turn), and must then return a card to play.
 
-## When false it plays a completely random card.
+## When true the AI plays a capturing card whenever it has one (picked at
+## random among them). When false it plays a completely random card.
 var prefer_captures: bool = true
 
 
-func _init() -> void:
-	display_name = "Easy"
-
-
 func choose_move(state: RoundState, rng: RandomNumberGenerator) -> Move:
-	var moves := state.legal_moves()
-	var announce := find_announce(moves)
-	if announce != null:
-		return announce   # announcing is worth points
+	var plays: Array[Move] = []
+	for move in state.legal_moves():
+		if move.type == Move.Type.ANNOUNCE:
+			return move   # always announce: it is worth points
+		plays.append(move)
 
-	var plays := play_moves(moves)
 	if prefer_captures:
 		var capturing: Array[Move] = []
 		for move in plays:

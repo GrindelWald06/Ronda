@@ -6,6 +6,10 @@ extends RefCounted
 ## cover. If a file cannot be found the function returns null (with a single
 ## warning) and CardView falls back to drawing the card in code.
 
+## Master switch. false = always use the cards drawn in code (no image files are
+## touched); true = use the images from res://assets/cards/.
+const USE_ARTWORK := false
+
 const FOLDER := "res://assets/cards/"
 ## Must match your file names exactly, letter case included: paths are
 ## case-sensitive on Linux, Android and web exports.
@@ -33,10 +37,14 @@ static func file_number(card: Card) -> int:
 
 
 static func face(card: Card) -> Texture2D:
+	if not USE_ARTWORK:
+		return null
 	return _load(str(file_number(card)))
 
 
 static func back() -> Texture2D:
+	if not USE_ARTWORK:
+		return null
 	return _load(BACK_NAME)
 
 

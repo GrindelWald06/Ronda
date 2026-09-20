@@ -5,6 +5,8 @@ extends RefCounted
 
 const WIN_SCORE := 41
 const TRINGLA_POINTS := 5
+## Clearing the whole table (not worth anything on the last hand).
+const MISSA_POINTS := 1
 ## Penalty for hiding a ronda that comes to light later in the deal.
 const HIDDEN_RONDA_PENALTY := 5
 const MIN_PLAYERS := 2

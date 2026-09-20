@@ -29,7 +29,8 @@ var controller: GameController
 var _card_layer: Control
 var _status_label: Label
 var _detail_label: Label
-var _new_round_button: Button
+var _new_match_button: Button
+var _next_round_button: Button
 var _announce_button: Button
 var _score_label: Label
 var _talon_view: CardView
@@ -62,7 +63,7 @@ func _ready() -> void:
 	resized.connect(_on_resized)
 	await get_tree().process_frame   # let the root Control get its real size
 	_layout(false)
-	controller.start_round()
+	controller.start_match()
 
 
 # ---------------------------------------------------------------------------
@@ -101,10 +102,16 @@ func _build_ui() -> void:
 	_detail_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_score_label = _make_label(16, HORIZONTAL_ALIGNMENT_LEFT)
 
-	_new_round_button = Button.new()
-	_new_round_button.text = "New round"
-	_new_round_button.pressed.connect(_on_new_round_pressed)
-	add_child(_new_round_button)
+	_new_match_button = Button.new()
+	_new_match_button.text = "New match"
+	_new_match_button.pressed.connect(_on_new_match_pressed)
+	add_child(_new_match_button)
+
+	_next_round_button = Button.new()
+	_next_round_button.visible = false
+	_next_round_button.add_theme_font_size_override("font_size", 20)
+	_next_round_button.pressed.connect(_on_next_round_pressed)
+	add_child(_next_round_button)
 
 	_announce_button = Button.new()
 	_announce_button.visible = false
@@ -154,10 +161,12 @@ func _layout(animate: bool) -> void:
 	_status_label.position = Vector2(SIDE_MARGIN, _table_y() - 76.0)
 	_status_label.size = Vector2(row_width, 68.0)
 	_detail_label.position = Vector2(SIDE_MARGIN, _table_y() + card_size.y + 12.0)
-	_detail_label.size = Vector2(row_width, 56.0)
-	_new_round_button.position = Vector2(24.0, TOP_MARGIN)
+	_detail_label.size = Vector2(row_width, 80.0)
+	_new_match_button.position = Vector2(24.0, TOP_MARGIN)
 	_score_label.position = Vector2(24.0, TOP_MARGIN + 46.0)
-	_score_label.size = Vector2(150.0, 70.0)
+	_score_label.size = Vector2(260.0, 90.0)
+	_next_round_button.size = Vector2(200.0, 52.0)
+	_next_round_button.position = Vector2(w / 2.0 - 100.0, _human_y() + card_size.y / 2.0 - 26.0)
 	_announce_button.size = Vector2(180.0, 44.0)
 	_announce_button.position = Vector2(w / 2.0 - 340.0, _human_y() + card_size.y / 2.0 - 22.0)
 
@@ -201,8 +210,15 @@ func _pile_position(side: int) -> Vector2:
 # Controller events
 # ---------------------------------------------------------------------------
 
-func _on_new_round_pressed() -> void:
-	controller.start_round()
+func _on_new_match_pressed() -> void:
+	controller.start_match()
+
+
+func _on_next_round_pressed() -> void:
+	if controller.match_state.is_over():
+		controller.start_match()
+	else:
+		controller.start_round()
 
 
 func _on_round_started() -> void:
@@ -210,6 +226,7 @@ func _on_round_started() -> void:
 	var id := _presentation_id
 	_input_enabled = false
 	_announce_button.hide()
+	_next_round_button.hide()
 	_clear_views()
 	_status_label.text = "Dealing..."
 	_detail_label.text = ""
@@ -332,20 +349,30 @@ func _on_move_applied(result: MoveResult) -> void:
 	controller.presentation_finished()
 
 
+## The round is over and its points are already added to the match score.
 func _on_round_finished() -> void:
 	_input_enabled = false
-	var state := controller.state
-	var mine := state.cards_won(HUMAN_SEAT)
-	var theirs := state.cards_won(OPPONENT_SEAT)
-	var headline := "Round over: a tie on cards."
-	if mine > theirs:
-		headline = "Round over: you collected more cards!"
-	elif theirs > mine:
-		headline = "Round over: the opponent collected more cards."
-	_status_label.text = "%s\nYou: %d cards (+%d)    Opponent: %d cards (+%d)" % [
-		headline, mine, state.card_points(HUMAN_SEAT),
-		theirs, state.card_points(OPPONENT_SEAT),
+	_announce_button.hide()
+	var finished_round := controller.state
+	var m := controller.match_state
+	var mine: int = finished_round.round_points[HUMAN_SEAT]
+	var theirs: int = finished_round.round_points[OPPONENT_SEAT]
+	var score_line := "Match score:  You %d  -  Opponent %d" % [
+		m.scores[HUMAN_SEAT], m.scores[OPPONENT_SEAT]
 	]
+	if m.is_over():
+		var headline := "MATCH OVER: you win!"
+		if m.winning_side() != HUMAN_SEAT:
+			headline = "MATCH OVER: the opponent wins."
+		_status_label.text = "%s\n%s" % [headline, score_line]
+		_next_round_button.text = "Play again"
+	else:
+		_status_label.text = "Round over: you scored %d, the opponent %d.\n%s" % [
+			mine, theirs, score_line
+		]
+		_next_round_button.text = "Next round"
+	_next_round_button.show()
+	_update_hud()
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +492,20 @@ func _update_hud() -> void:
 		var won := state.cards_won(side)
 		_pile_views[side].visible = won > 0
 		_pile_labels[side].text = "%s: %d cards" % [_seat_name(side), won]
-	_score_label.text = "Points this round\nYou: %d\nOpponent: %d" % [
-		state.round_points[HUMAN_SEAT], state.round_points[OPPONENT_SEAT]
+	var m := controller.match_state
+	_score_label.text = "Round %d  (first to %d)\n%s\n%s" % [
+		m.round_number, m.target_score, _score_text(HUMAN_SEAT), _score_text(OPPONENT_SEAT)
 	]
+
+
+## "You: 12  (+3)": match score, plus the points of the round in progress.
+func _score_text(side: int) -> String:
+	var m := controller.match_state
+	var text := "%s: %d" % [_seat_name(side), m.scores[side]]
+	var pending: int = 0 if m.round_counted else controller.state.round_points[side]
+	if pending > 0:
+		text += "  (+%d)" % pending
+	return text
 
 
 func _seat_name(seat: int) -> String:
@@ -482,8 +520,8 @@ func _describe_move(result: MoveResult) -> String:
 	for c in result.captured_cards:
 		ranks.append(str(c.rank))
 	var text := "%s played the %s and captured %s." % [who, result.played, ", ".join(ranks)]
-	if result.cleared_table and not result.was_last_hand:
-		text += " Missa!"
+	if result.cleared_table and result.was_last_hand:
+		text += " (no missa points on the last hand)"
 	return text
 
 

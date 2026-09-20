@@ -25,8 +25,13 @@ extends RefCounted
 ## tringla they hold. Once every player has played a first card the
 ## announcements are compared and the points are awarded. A player who hides a
 ## ronda and then plays both cards of the pair is penalised as soon as it comes
-## to light. Points go to `round_points`; missa, card points and the match
-## score come later.
+## to light.
+##
+## POINTS
+## Everything that scores during the round goes into `round_points`: announcements
+## and penalties, missa (clearing the table, except on the last hand) and, when
+## the round ends, one point per card beyond the threshold. The match score
+## across rounds is kept by MatchState.
 
 var player_count: int
 var dealer: int = 0
@@ -286,6 +291,8 @@ func _apply_play(move: Move) -> MoveResult:
 		result.was_capture = true
 		result.captured_cards = taken
 		result.cleared_table = table.is_empty()
+		if result.cleared_table and not is_last_hand:
+			_award(side_of(seat), RondaRules.MISSA_POINTS, "Missa", result)
 
 	# Must happen before a possible re-deal, which resets the per-deal tracking.
 	_register_play(seat, played, result)
@@ -313,6 +320,9 @@ func _finish_round(result: MoveResult) -> void:
 		result.swept_by = last_capturer
 		result.swept_cards = Card.copy_array(table)
 		table.clear()
+	# Every card beyond the threshold is worth a point.
+	for side in side_count():
+		_award(side, card_points(side), "%d cards" % cards_won(side), result)
 
 
 func _all_hands_empty() -> bool:

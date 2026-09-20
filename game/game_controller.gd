@@ -1,19 +1,24 @@
 class_name GameController
 extends Node
-## Owns the RoundState and decides whose turn it is. It contains no drawing
-## code: the view (GameTable) listens to its signals and answers back when it
-## has finished animating.
+## Owns the MatchState (scores, dealer, round number) and the RoundState being
+## played, and decides whose turn it is. It contains no drawing code: the view
+## (GameTable) listens to its signals and answers back when it has finished
+## animating.
 ##
 ## FLOW
-##   start_round()      -> emits round_started, then waits for the view
+##   start_match() / start_round() -> emits round_started, then waits for the view
 ##   view calls presentation_finished()
-##   -> the round is over?      emit round_finished
+##   -> the round is over?      add its points to the match, emit round_finished
 ##   -> human to play?          emit awaiting_human, then human_play(card)
+##                              or human_announce()
 ##   -> AI to play?             wait a moment, apply the AI's move
 ##   every applied move emits move_applied(result) and waits for the view again.
 ##
 ## Waiting for the view means animations never overlap and the AI never plays
 ## while cards are still flying around.
+##
+## After round_finished the view decides what comes next: start_round() for the
+## next round of the match, or start_match() once the match is over.
 
 signal round_started
 signal move_applied(result: MoveResult)
@@ -25,10 +30,9 @@ var human_seat: int = 0
 ## Seconds the AI "thinks" before playing.
 var ai_think_time: float = 0.7
 
+var match_state: MatchState
+## The round in progress (shortcut for match_state.current_round).
 var state: RoundState
-## Dealer of the current round. The seat after the dealer plays first, and the
-## job rotates to the next seat after every round.
-var dealer: int = 0
 
 var _ai := RandomAI.new()
 var _rng := RandomNumberGenerator.new()
@@ -38,12 +42,18 @@ var _round_id: int = 0       # lets old AI timers detect that a new round began
 
 func _ready() -> void:
 	_rng.randomize()
-	dealer = _rng.randi_range(0, player_count - 1)
 
 
+## Starts a brand new match with a random first dealer and deals its first round.
+func start_match() -> void:
+	match_state = MatchState.new(player_count, _rng.randi_range(0, player_count - 1))
+	start_round()
+
+
+## Deals the next round of the current match.
 func start_round() -> void:
 	_round_id += 1
-	state = RoundState.new_round(player_count, dealer, _rng)
+	state = match_state.start_round(_rng)
 	_busy = true
 	round_started.emit()
 
@@ -75,7 +85,7 @@ func human_announce() -> void:
 
 func _advance() -> void:
 	if state.finished:
-		dealer = state.next_player(dealer)
+		match_state.finish_round()
 		round_finished.emit()
 	elif state.current_player == human_seat:
 		awaiting_human.emit()

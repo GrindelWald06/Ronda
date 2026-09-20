@@ -30,6 +30,7 @@ var _card_layer: Control
 var _status_label: Label
 var _detail_label: Label
 var _new_match_button: Button
+var _difficulty_button: OptionButton
 var _next_round_button: Button
 var _announce_button: Button
 var _score_label: Label
@@ -55,7 +56,9 @@ func _ready() -> void:
 	controller = GameController.new()
 	controller.human_seat = HUMAN_SEAT
 	add_child(controller)
+	controller.set_difficulty(_difficulty_button.selected)
 	controller.round_started.connect(_on_round_started)
+	controller.awaiting_ai.connect(_on_awaiting_ai)
 	controller.move_applied.connect(_on_move_applied)
 	controller.awaiting_human.connect(_on_awaiting_human)
 	controller.round_finished.connect(_on_round_finished)
@@ -106,6 +109,14 @@ func _build_ui() -> void:
 	_new_match_button.text = "New match"
 	_new_match_button.pressed.connect(_on_new_match_pressed)
 	add_child(_new_match_button)
+
+	_difficulty_button = OptionButton.new()
+	for level_name in AIFactory.NAMES:
+		_difficulty_button.add_item("AI: %s" % level_name)
+	_difficulty_button.select(AIFactory.Difficulty.MEDIUM)
+	_difficulty_button.tooltip_text = "Opponent strength (applies from its next move)"
+	_difficulty_button.item_selected.connect(_on_difficulty_selected)
+	add_child(_difficulty_button)
 
 	_next_round_button = Button.new()
 	_next_round_button.visible = false
@@ -163,6 +174,8 @@ func _layout(animate: bool) -> void:
 	_detail_label.position = Vector2(SIDE_MARGIN, _table_y() + card_size.y + 12.0)
 	_detail_label.size = Vector2(row_width, 80.0)
 	_new_match_button.position = Vector2(24.0, TOP_MARGIN)
+	_difficulty_button.position = Vector2(132.0, TOP_MARGIN)
+	_difficulty_button.custom_minimum_size = Vector2(128.0, 0.0)
 	_score_label.position = Vector2(24.0, TOP_MARGIN + 46.0)
 	_score_label.size = Vector2(260.0, 90.0)
 	_next_round_button.size = Vector2(200.0, 52.0)
@@ -209,6 +222,14 @@ func _pile_position(side: int) -> Vector2:
 # ---------------------------------------------------------------------------
 # Controller events
 # ---------------------------------------------------------------------------
+
+func _on_difficulty_selected(index: int) -> void:
+	controller.set_difficulty(index)
+
+
+func _on_awaiting_ai() -> void:
+	_status_label.text = "Opponent is thinking..."
+
 
 func _on_new_match_pressed() -> void:
 	controller.start_match()

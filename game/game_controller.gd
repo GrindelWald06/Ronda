@@ -23,6 +23,8 @@ extends Node
 signal round_started
 signal move_applied(result: MoveResult)
 signal awaiting_human
+## The AI is about to play (it thinks for a moment first).
+signal awaiting_ai
 signal round_finished
 
 var player_count: int = 2
@@ -34,7 +36,7 @@ var match_state: MatchState
 ## The round in progress (shortcut for match_state.current_round).
 var state: RoundState
 
-var _ai := RandomAI.new()
+var _ai: AIPlayer = AIFactory.create(AIFactory.Difficulty.MEDIUM)
 var _rng := RandomNumberGenerator.new()
 var _busy: bool = false      # true while the view is presenting something
 var _round_id: int = 0       # lets old AI timers detect that a new round began
@@ -42,6 +44,12 @@ var _round_id: int = 0       # lets old AI timers detect that a new round began
 
 func _ready() -> void:
 	_rng.randomize()
+
+
+## Changes the opponent's strength (an AIFactory.Difficulty value). It takes
+## effect from the AI's next move.
+func set_difficulty(difficulty: int) -> void:
+	_ai = AIFactory.create(difficulty)
 
 
 ## Starts a brand new match with a random first dealer and deals its first round.
@@ -95,6 +103,7 @@ func _advance() -> void:
 
 func _run_ai_turn() -> void:
 	var id := _round_id
+	awaiting_ai.emit()
 	await get_tree().create_timer(ai_think_time).timeout
 	if id != _round_id or state.finished:
 		return

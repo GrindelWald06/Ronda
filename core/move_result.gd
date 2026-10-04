@@ -9,11 +9,12 @@ extends RefCounted
 var ok: bool = true
 var error: String = ""
 
-## Move.Type.PLAY or Move.Type.ANNOUNCE.
+## The Move.Type of the move (PLAY, ANNOUNCE, TAP, COUNTER or DECLINE).
 var kind: int = Move.Type.PLAY
 var player: int = -1
 
-## PLAY moves: the card that was played.
+## PLAY, TAP and COUNTER moves: the card that was played. Null for ANNOUNCE and
+## DECLINE moves.
 var played: Card
 ## ANNOUNCE moves: what was announced.
 var announcement: Announcement
@@ -23,11 +24,25 @@ var announcement: Announcement
 ## it comes to light).
 var awards: Array[PointAward] = []
 
-## True if the played card paired with a table card.
+## True if cards were collected by this move: a card that paired with a table
+## card, or a tap that has just been settled (which can also happen on a DECLINE).
 var was_capture: bool = false
-## Table cards taken with the played card (the played card is not included).
-## Always in sequence order, starting with the paired card.
+## The seat that collected them.
+var capturer: int = -1
+## Cards collected, EXCLUDING the card played by this very move (if any). For a
+## normal capture: the paired card and the run above it. For a settled tap: the
+## rest of the stack, then the run above it. Always starts with the card the
+## played card lands on.
 var captured_cards: Array[Card] = []
+
+## A TAP or COUNTER left the chain waiting for the next player's answer: the
+## played card is stacked on the tapped card and nothing is collected yet.
+var tap_pending: bool = false
+## This move settled a tap chain (the scorer is `capturer`, the awards say how
+## many points it was worth).
+var chain_resolved: bool = false
+## Number of stacked cards when it was settled: 2 = Bount, 3 = Khamsa, 4 = Aachra.
+var chain_level: int = 0
 
 ## The capture emptied the table (a "missa" candidate). Phase 6 decides
 ## whether it scores: it does not on the last hand, see `was_last_hand`.

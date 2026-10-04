@@ -23,6 +23,7 @@ const PAUSE_TIME := 0.25
 const TOP_MARGIN := 20.0
 const BOTTOM_MARGIN := 28.0
 const SIDE_MARGIN := 150.0   # space kept free on both sides of the card rows
+const TAP_STACK_OFFSET := Vector2(7.0, 7.0)   # cascading offset between stacked cards
 
 var controller: GameController
 
@@ -33,6 +34,7 @@ var _new_match_button: Button
 var _difficulty_button: OptionButton
 var _next_round_button: Button
 var _announce_button: Button
+var _decline_button: Button
 var _score_label: Label
 var _talon_view: CardView
 var _talon_label: Label
@@ -42,6 +44,11 @@ var _pile_labels: Array[Label] = []
 var _human_views: Array[CardView] = []
 var _opponent_views: Array[CardView] = []
 var _table_views: Array[CardView] = []
+## Cards currently stacked in a pending tap chain: not on the table, not in any
+## hand or pile yet. Positioned near the centre of the table (see _position_tap_stack).
+var _tap_stack_views: Array[CardView] = []
+## Small "Bount!" buttons floating above hand cards that could tap right now.
+var _tap_badges: Array[Button] = []
 
 var _input_enabled: bool = false
 ## Bumped whenever a new round starts so that animations of an abandoned round
@@ -129,6 +136,13 @@ func _build_ui() -> void:
 	_announce_button.pressed.connect(_on_announce_pressed)
 	add_child(_announce_button)
 
+	_decline_button = Button.new()
+	_decline_button.text = "Let it go"
+	_decline_button.visible = false
+	_decline_button.tooltip_text = "The tap stack is awarded to whoever laid its last card."
+	_decline_button.pressed.connect(_on_decline_pressed)
+	add_child(_decline_button)
+
 
 func _make_label(font_size: int, align: HorizontalAlignment) -> Label:
 	var label := Label.new()
@@ -147,6 +161,8 @@ func _make_label(font_size: int, align: HorizontalAlignment) -> Label:
 
 func _on_resized() -> void:
 	_layout(false)
+	if _input_enabled and controller.state != null and controller.state.tap_chain == null:
+		_update_tap_badges()
 
 
 ## Puts every card and HUD element where it belongs. With `animate` the cards
@@ -182,6 +198,9 @@ func _layout(animate: bool) -> void:
 	_next_round_button.position = Vector2(w / 2.0 - 100.0, _human_y() + card_size.y / 2.0 - 26.0)
 	_announce_button.size = Vector2(180.0, 44.0)
 	_announce_button.position = Vector2(w / 2.0 - 340.0, _human_y() + card_size.y / 2.0 - 22.0)
+	_decline_button.size = Vector2(160.0, 44.0)
+	_decline_button.position = Vector2(w / 2.0 + 160.0, _human_y() + card_size.y / 2.0 - 22.0)
+	_position_tap_stack(animate)
 
 
 ## Lays `views` out in one horizontal row centred on `center_x`. When the row
@@ -219,6 +238,16 @@ func _pile_position(side: int) -> Vector2:
 	return Vector2(x, _human_y() if side == HUMAN_SEAT else TOP_MARGIN)
 
 
+## Places the pending tap stack (if any) at the centre of the table, each card
+## nudged a little further than the last so the whole stack stays visible.
+func _position_tap_stack(animate: bool) -> void:
+	var base := Vector2((size.x - CardView.card_size.x) / 2.0, _table_y())
+	for i in _tap_stack_views.size():
+		var view := _tap_stack_views[i]
+		view.move_to(base + TAP_STACK_OFFSET * float(i), MOVE_TIME if animate else 0.0)
+		_card_layer.move_child(view, -1)
+
+
 # ---------------------------------------------------------------------------
 # Controller events
 # ---------------------------------------------------------------------------
@@ -228,7 +257,10 @@ func _on_difficulty_selected(index: int) -> void:
 
 
 func _on_awaiting_ai() -> void:
-	_status_label.text = "Opponent is thinking..."
+	if controller.state.tap_chain != null:
+		_status_label.text = "Opponent is thinking about answering the tap..."
+	else:
+		_status_label.text = "Opponent is thinking..."
 
 
 func _on_new_match_pressed() -> void:
@@ -247,6 +279,8 @@ func _on_round_started() -> void:
 	var id := _presentation_id
 	_input_enabled = false
 	_announce_button.hide()
+	_show_decline_button(false)
+	_clear_tap_badges()
 	_next_round_button.hide()
 	_clear_views()
 	_status_label.text = "Dealing..."
@@ -267,9 +301,22 @@ func _on_round_started() -> void:
 
 func _on_awaiting_human() -> void:
 	_input_enabled = true
-	_status_label.text = "Your turn: click a card to play it."
-	for view in _human_views:
-		view.interactive = true
+	var state := controller.state
+	if state.tap_chain != null:
+		_status_label.text = (
+			"A tap is waiting: play a %d to add to it, or let it go."
+			% state.tap_chain.rank
+		)
+		for view in _human_views:
+			view.interactive = (view.card.rank == state.tap_chain.rank)
+		_clear_tap_badges()
+		_show_decline_button(true)
+	else:
+		_status_label.text = "Your turn: click a card to play it."
+		for view in _human_views:
+			view.interactive = true
+		_show_decline_button(false)
+		_update_tap_badges()
 	_update_announce_button()
 
 
@@ -280,9 +327,28 @@ func _on_move_applied(result: MoveResult) -> void:
 	var state := controller.state
 	_input_enabled = false
 	_announce_button.hide()
+	_show_decline_button(false)
+	_clear_tap_badges()
 	_clear_highlights()
 	for view in _human_views:
 		view.interactive = false
+
+	# A tap chain opened, grew, or got settled by this move.
+	if result.kind == Move.Type.TAP or result.kind == Move.Type.COUNTER:
+		await _present_tap_or_counter(result, id)
+		if id != _presentation_id:
+			return
+		_update_hud()
+		controller.presentation_finished()
+		return
+
+	if result.kind == Move.Type.DECLINE:
+		await _present_decline(result, id)
+		if id != _presentation_id:
+			return
+		_update_hud()
+		controller.presentation_finished()
+		return
 
 	# An announcement uses no card: show it, then hand the turn back.
 	if result.kind == Move.Type.ANNOUNCE:
@@ -353,18 +419,9 @@ func _on_move_applied(result: MoveResult) -> void:
 			return
 
 	if result.round_over:
-		# The last capturer takes whatever is left on the table.
-		if result.swept_by != -1 and not _table_views.is_empty():
-			var sweep_pos := _pile_position(state.side_of(result.swept_by))
-			for view in _table_views:
-				view.move_to(sweep_pos, MOVE_TIME)
-			_detail_label.text += " %s takes the remaining cards." % _seat_name(result.swept_by)
-			await _wait(MOVE_TIME + 0.1)
-			if id != _presentation_id:
-				return
-			for view in _table_views:
-				view.queue_free()
-			_table_views.clear()
+		await _present_round_sweep(result, id)
+		if id != _presentation_id:
+			return
 
 	_update_hud()
 	controller.presentation_finished()
@@ -405,8 +462,75 @@ func _on_hand_card_pressed(view: CardView) -> void:
 		return
 	_input_enabled = false
 	_announce_button.hide()
+	_show_decline_button(false)
+	_clear_tap_badges()
 	_clear_highlights()
-	controller.human_play(view.card)
+	if controller.state.tap_chain != null:
+		controller.human_counter(view.card)
+	else:
+		controller.human_play(view.card)
+
+
+## The decline button: the pending tap stack is awarded to whoever laid its last
+## card, then the same player (the one declining) carries on with a normal move.
+func _on_decline_pressed() -> void:
+	if not _input_enabled:
+		return
+	_input_enabled = false
+	_show_decline_button(false)
+	_announce_button.hide()
+	_clear_tap_badges()
+	for view in _human_views:
+		view.interactive = false
+	controller.human_decline()
+
+
+func _show_decline_button(visible_now: bool) -> void:
+	_decline_button.visible = visible_now and _input_enabled
+
+
+## Shows a small "Bount!" button above every hand card that could tap the card
+## just thrown by the opponent right now.
+func _update_tap_badges() -> void:
+	_clear_tap_badges()
+	var state := controller.state
+	if state == null or state.tap_chain != null:
+		return
+	for view in _human_views:
+		if not state.can_tap(HUMAN_SEAT, view.card):
+			continue
+		var badge := Button.new()
+		badge.text = "Bount!"
+		badge.add_theme_font_size_override("font_size", 13)
+		badge.tooltip_text = (
+			"Tap: if nobody answers, you still take the whole capture plus a Bount "
+			+ "point. But if the opponent holds another matching card, they can "
+			+ "steal the whole pile with Khamsa (5) or even Aachra (10)."
+		)
+		badge.pressed.connect(_on_tap_badge_pressed.bind(view.card))
+		add_child(badge)
+		badge.size = Vector2(60.0, 26.0)
+		badge.position = view.position + Vector2(CardView.card_size.x / 2.0 - 30.0, -32.0)
+		_tap_badges.append(badge)
+
+
+func _clear_tap_badges() -> void:
+	for badge in _tap_badges:
+		badge.queue_free()
+	_tap_badges.clear()
+
+
+func _on_tap_badge_pressed(card: Card) -> void:
+	if not _input_enabled:
+		return
+	_input_enabled = false
+	_announce_button.hide()
+	_show_decline_button(false)
+	_clear_tap_badges()
+	_clear_highlights()
+	for view in _human_views:
+		view.interactive = false
+	controller.human_tap(card)
 
 
 func _on_announce_pressed() -> void:
@@ -414,6 +538,8 @@ func _on_announce_pressed() -> void:
 		return
 	_input_enabled = false
 	_announce_button.hide()
+	_show_decline_button(false)
+	_clear_tap_badges()
 	for view in _human_views:
 		view.interactive = false
 	_clear_highlights()
@@ -495,10 +621,11 @@ func _take_view(views: Array[CardView], card: Card) -> CardView:
 
 
 func _clear_views() -> void:
-	for views in [_human_views, _opponent_views, _table_views]:
+	for views in [_human_views, _opponent_views, _table_views, _tap_stack_views]:
 		for view in views:
 			view.queue_free()
 		views.clear()
+	_clear_tap_badges()
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +678,131 @@ func _describe_awards(result: MoveResult) -> String:
 	for award in result.awards:
 		parts.append("%s: %s +%d" % [award.reason, _seat_name(award.side), award.points])
 	return "    ".join(parts)
+
+
+## A TAP or COUNTER move: the played card leaves the hand and joins the stack
+## (pulling the already-thrown card into it too, on the very first tap). If this
+## move settled the chain (nobody can or wants to add another card), the whole
+## stack flies to the scorer's pile.
+func _present_tap_or_counter(result: MoveResult, id: int) -> void:
+	var played_view := _take_from_hand(result.player, result.played)
+	if played_view == null:
+		push_error("GameTable: no view found for %s" % [result.played])
+		return
+	played_view.face_up = true
+	played_view.interactive = false
+	_card_layer.move_child(played_view, -1)
+
+	if result.kind == Move.Type.TAP:
+		# The card that was thrown earlier is still sitting on the table: pull its
+		# view out and start the stack with it (only one card of a rank can ever
+		# be on the table at once, so matching by rank is unambiguous).
+		var thrown_view: CardView = null
+		for v in _table_views:
+			if v.card.rank == result.played.rank:
+				thrown_view = v
+				break
+		if thrown_view != null:
+			_table_views.erase(thrown_view)
+			_tap_stack_views.append(thrown_view)
+	_tap_stack_views.append(played_view)
+	_position_tap_stack(true)
+
+	_detail_label.text = _describe_tap_event(result)
+	await _wait(MOVE_TIME + PAUSE_TIME)
+	if id != _presentation_id:
+		return
+
+	if result.chain_resolved:
+		var moved := _animate_tap_settlement(result)
+		await _wait(MOVE_TIME + 0.1)
+		if id != _presentation_id:
+			return
+		for v in moved:
+			v.queue_free()
+		var awards_text := _describe_awards(result)
+		if not awards_text.is_empty():
+			_detail_label.text += "\n" + awards_text
+	# Otherwise the stack just waits where it is for the next player's answer.
+
+	if result.new_hands_dealt:
+		_spawn_hand_views()
+		_layout(true)
+		await _wait(MOVE_TIME + 0.2)
+		if id != _presentation_id:
+			return
+
+	if result.round_over:
+		await _present_round_sweep(result, id)
+
+
+## A DECLINE move: no card is played, but the stack that was waiting is awarded
+## to whoever laid its last card.
+func _present_decline(result: MoveResult, id: int) -> void:
+	_detail_label.text = _describe_tap_event(result)
+	var moved := _animate_tap_settlement(result)
+	await _wait(MOVE_TIME + 0.1)
+	if id != _presentation_id:
+		return
+	for v in moved:
+		v.queue_free()
+	var awards_text := _describe_awards(result)
+	if not awards_text.is_empty():
+		_detail_label.text += "\n" + awards_text
+
+
+## Sends every card of a settled tap chain (whatever is still stacked, plus any
+## "run above" cards the chain also swept up from the table) flying to the
+## scorer's pile. Returns the views so the caller can free them once the
+## animation has had time to play.
+func _animate_tap_settlement(result: MoveResult) -> Array[CardView]:
+	var pile_pos := _pile_position(controller.state.side_of(result.capturer))
+	var moved: Array[CardView] = []
+	moved.append_array(_tap_stack_views)
+	_tap_stack_views.clear()
+	for c in result.captured_cards:
+		var v := _take_from_table(c)
+		if v != null:
+			moved.append(v)
+	for v in moved:
+		v.move_to(pile_pos, MOVE_TIME)
+	_layout(true)
+	return moved
+
+
+## The last capturer takes whatever is left on the table at the end of the round.
+func _present_round_sweep(result: MoveResult, id: int) -> void:
+	if result.swept_by == -1 or _table_views.is_empty():
+		return
+	var sweep_pos := _pile_position(controller.state.side_of(result.swept_by))
+	for view in _table_views:
+		view.move_to(sweep_pos, MOVE_TIME)
+	_detail_label.text += " %s takes the remaining cards." % _seat_name(result.swept_by)
+	await _wait(MOVE_TIME + 0.1)
+	if id != _presentation_id:
+		return
+	for view in _table_views:
+		view.queue_free()
+	_table_views.clear()
+
+
+## Level the stack has (or just reached): 2 = Bount, 3 = Khamsa, 4 = Aachra. For a
+## TAP it's always 2; for a COUNTER still waiting for an answer, RoundState's own
+## tap_chain says so; for one that just settled, the result does.
+func _tap_event_level(result: MoveResult) -> int:
+	if result.kind == Move.Type.TAP:
+		return 2
+	if result.tap_pending and controller.state.tap_chain != null:
+		return controller.state.tap_chain.level()
+	return result.chain_level
+
+
+func _describe_tap_event(result: MoveResult) -> String:
+	var who := _seat_name(result.player)
+	if result.kind == Move.Type.DECLINE:
+		return "%s lets the tap go." % who
+	var shout: String = RondaRules.TAP_NAMES.get(_tap_event_level(result), "Tap")
+	return "%s plays the %s: %s!" % [who, result.played, shout]
 
 
 func _wait(seconds: float) -> void:

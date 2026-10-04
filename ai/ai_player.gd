@@ -9,7 +9,8 @@ extends RefCounted
 ## could know (own hand, table, captured piles, and how many cards the others hold).
 ##
 ## choose_move() is called again after an ANNOUNCE move (announcing does not use
-## up the turn) and must then return a card to play.
+## up the turn) and must then return another move. When a tap is waiting for an
+## answer (state.tap_chain != null), the moves on offer are COUNTER and DECLINE.
 
 ## Short name for menus and logs.
 var display_name: String = "AI"
@@ -20,18 +21,28 @@ func choose_move(_state: RoundState, _rng: RandomNumberGenerator) -> Move:
 	return null
 
 
-## The ANNOUNCE move in `moves`, or null if there is none.
-static func find_announce(moves: Array[Move]) -> Move:
+## The first move of the given Move.Type in `moves`, or null if there is none.
+static func find_move(moves: Array[Move], type: int) -> Move:
 	for move in moves:
-		if move.type == Move.Type.ANNOUNCE:
+		if move.type == type:
 			return move
 	return null
 
 
-## Only the PLAY moves of `moves`.
-static func play_moves(moves: Array[Move]) -> Array[Move]:
-	var plays: Array[Move] = []
+## The ANNOUNCE move in `moves`, or null if there is none.
+static func find_announce(moves: Array[Move]) -> Move:
+	return find_move(moves, Move.Type.ANNOUNCE)
+
+
+## All moves of the given Move.Type.
+static func moves_of_type(moves: Array[Move], type: int) -> Array[Move]:
+	var found: Array[Move] = []
 	for move in moves:
-		if move.type == Move.Type.PLAY:
-			plays.append(move)
-	return plays
+		if move.type == type:
+			found.append(move)
+	return found
+
+
+## Only the PLAY moves of `moves` (no taps, counters or announcements).
+static func play_moves(moves: Array[Move]) -> Array[Move]:
+	return moves_of_type(moves, Move.Type.PLAY)

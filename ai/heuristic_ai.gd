@@ -10,6 +10,11 @@ extends AIPlayer
 ## on the table or in captured piles is completely safe to leave out.
 ##
 ## Values are counted in "cards moved to a pile"; a missa is worth a bit more.
+##
+## Tapping: a card that could tap gets an extra candidate (the tap), worth the
+## Bount point but risking that the opponent answers with the third card (Khamsa,
+## 5 points for them). The estimates assume two players. When a tap waits for an
+## answer, it adds a card if the odds of the fourth card turning up are low.
 
 const MISSA_BONUS := 1.5
 ## How much a capture I could make next turn is worth compared to one now: the
@@ -28,15 +33,58 @@ func choose_move(state: RoundState, rng: RandomNumberGenerator) -> Move:
 		return announce
 
 	var knowledge := AIKnowledge.new(state, state.current_player)
+	if state.tap_chain != null:
+		return _answer_tap(state, knowledge, moves)
+
 	var best: Move = null
 	var best_score := -INF
-	for move in play_moves(moves):
+	for move in moves:
+		var score: float
+		if move.type == Move.Type.PLAY:
+			score = _score_play(state, knowledge, move.card)
+		elif move.type == Move.Type.TAP:
+			score = _score_play(state, knowledge, move.card) \
+				+ _tap_bonus(state, knowledge, move.card)
+		else:
+			continue
 		# The tiny random term only breaks ties, so play isn't fully predictable.
-		var score := _score_play(state, knowledge, move.card) + rng.randf() * 0.01
+		score += rng.randf() * 0.01
 		if score > best_score:
 			best_score = score
 			best = move
 	return best
+
+
+## How much better (or worse) tapping a card is than simply capturing it.
+## With pc = the chance the opponent holds another card of that rank:
+##  - nobody answers (1 - pc): +1 point for the Bount;
+##  - they answer with the Khamsa (pc): they score 5 and take the cards, so we
+##    lose the capture too... unless we hold a further card of the rank ourselves
+##    and answer back with the Aachra for +10.
+func _tap_bonus(state: RoundState, knowledge: AIKnowledge, card: Card) -> float:
+	var p_answer := knowledge.probability_opponents_hold(card.rank)
+	for c in state.hand_of(state.current_player):
+		if c.rank == card.rank and c.id() != card.id():
+			return 1.0 + 9.0 * p_answer
+	var gain := 1.0 + float(RondaRules.find_capture(card, state.table).size())
+	return 1.0 - p_answer * (6.0 + 2.0 * gain)
+
+
+## A tap is waiting for our answer: add a card (Khamsa / Aachra) or let it go.
+func _answer_tap(state: RoundState, knowledge: AIKnowledge, moves: Array[Move]) -> Move:
+	var counters := moves_of_type(moves, Move.Type.COUNTER)
+	var decline := find_move(moves, Move.Type.DECLINE)
+	if counters.is_empty():
+		return decline
+	# Fourth card (Aachra): worth 10 and nobody can answer.
+	if state.tap_chain.level() >= RondaRules.MAX_TAP_LEVEL - 1:
+		return counters[0]
+	# Third card (Khamsa): +5 for us, unless the opponent has the fourth card
+	# (then they score 10). Letting it go costs 1 point (their Bount).
+	var p_fourth := knowledge.probability_opponents_hold(state.tap_chain.rank)
+	if 5.0 * (1.0 - p_fourth) - 10.0 * p_fourth > -1.0:
+		return counters[0]
+	return decline
 
 
 func _score_play(state: RoundState, knowledge: AIKnowledge, card: Card) -> float:

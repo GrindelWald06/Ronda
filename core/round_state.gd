@@ -18,7 +18,8 @@ extends RefCounted
 ##
 ## CARD FLOW
 ## talon -> hands (dealt in blocks) and table (opening only) -> captured piles.
-## Total number of cards is always 40.
+## Total number of cards is always 40. While a tap is waiting for an answer, the
+## stacked cards are held by `tap_chain` (neither on the table nor in a pile).
 ##
 ## ANNOUNCEMENTS (see Move.announce)
 ## Before playing their first card of a deal a player may announce the ronda or
@@ -27,10 +28,22 @@ extends RefCounted
 ## ronda and then plays both cards of the pair is penalised as soon as it comes
 ## to light.
 ##
+## TAPPING (see Move.tap)
+## The player right after the one who has just THROWN a card (a play that did not
+## capture) may tap it with a card of the same rank. The two cards are not
+## collected at once: they form a stack (`tap_chain`) and the following players
+## may add a same-rank card on top, one after the other (Khamsa, Aachra).
+## Adding a card is that player's turn. When the next player holds no card of the
+## rank, or the stack has four cards, the chain is settled straight away.
+## Otherwise the next player must COUNTER or DECLINE; after DECLINE they carry on
+## with a normal turn. Settling gives the player who laid the LAST card 1, 5 or
+## 10 points for a stack of 2, 3 or 4 cards, and the whole stack plus the run of
+## table cards above it.
+##
 ## POINTS
 ## Everything that scores during the round goes into `round_points`: announcements
-## and penalties, missa (clearing the table, except on the last hand) and, when
-## the round ends, one point per card beyond the threshold. The match score
+## and penalties, taps, missa (clearing the table, except on the last hand) and,
+## when the round ends, one point per card beyond the threshold. The match score
 ## across rounds is kept by MatchState.
 
 var player_count: int
@@ -46,16 +59,24 @@ var talon: Deck
 ## Array of Array[Card], indexed by SIDE, holding cards won this round.
 var captured: Array = []
 
-## Points scored this round so far (announcements, penalties), indexed by SIDE.
+## Points scored this round so far, indexed by SIDE.
 var round_points: Array[int] = []
 ## Announcements made in the current deal, in the order they were made.
 var announcements: Array[Announcement] = []
 
-## Seat that made the most recent capture (-1 if nobody has captured yet).
+## The tap waiting for an answer from `current_player`, or null.
+var tap_chain: TapChain = null
+
+## Seat that most recently collected cards (-1 if nobody has yet).
 var last_capturer: int = -1
 ## True once the dealer's final deal has been made ("Khlassou!").
 var is_last_hand: bool = false
 var finished: bool = false
+
+# The card the previous player has just thrown (null if their move captured, or
+# after any other move) and who threw it. This is what can be tapped.
+var _last_throw: Card = null
+var _last_throw_seat: int = -1
 
 # Per-deal bookkeeping, reset by _begin_deal_tracking(). All indexed by seat.
 var _announcement_by_seat: Array = []   # Announcement, or null if none
@@ -211,36 +232,76 @@ func available_announcement(seat: int) -> Announcement:
 	return RondaRules.find_announcement(seat, hand)
 
 
+## Can `seat` tap the card that was just thrown by playing `card` (which must be
+## in their hand)? Only the player right after the thrower can, only right away,
+## and only with a card of the same rank.
+func can_tap(seat: int, card: Card) -> bool:
+	if finished or tap_chain != null or _last_throw == null:
+		return false
+	if seat != current_player or seat != next_player(_last_throw_seat):
+		return false
+	return card.rank == _last_throw.rank
+
+
+## Cards in `seat`'s hand that could be added to the tap waiting for an answer.
+func counter_cards(seat: int) -> Array[Card]:
+	var cards: Array[Card] = []
+	if tap_chain == null:
+		return cards
+	var hand: Array[Card] = hands[seat]
+	for c in hand:
+		if c.rank == tap_chain.rank:
+			cards.append(c)
+	return cards
+
+
 # ---------------------------------------------------------------------------
 # Playing
 # ---------------------------------------------------------------------------
 
-## All moves available to the current player: one PLAY per card in hand, plus
-## an ANNOUNCE move (last in the list) when an announcement is possible. Empty
-## once the round is finished.
+## All moves available to the current player. Empty once the round is finished.
+##  - Normally: a PLAY per card in hand, plus a TAP for each card that can tap.
+##  - While a tap waits for an answer: a COUNTER per card of the chain's rank,
+##    plus DECLINE.
+##  - In both cases an ANNOUNCE move (last in the list) when one is possible.
 func legal_moves() -> Array[Move]:
 	var moves: Array[Move] = []
 	if finished:
 		return moves
 	var hand: Array[Card] = hands[current_player]
-	for card in hand:
-		moves.append(Move.play(current_player, card))
+	if tap_chain != null:
+		for card in counter_cards(current_player):
+			moves.append(Move.counter(current_player, card))
+		moves.append(Move.decline(current_player))
+	else:
+		for card in hand:
+			moves.append(Move.play(current_player, card))
+			if can_tap(current_player, card):
+				moves.append(Move.tap(current_player, card))
 	if available_announcement(current_player) != null:
 		moves.append(Move.announce(current_player))
 	return moves
 
 
 func is_legal(move: Move) -> bool:
-	if finished or move == null:
+	if finished or move == null or move.player != current_player:
 		return false
-	if move.player != current_player:
-		return false
-	if move.type == Move.Type.ANNOUNCE:
-		return available_announcement(move.player) != null
-	if move.card == null:
-		return false
-	var hand: Array[Card] = hands[current_player]
-	return _index_of(hand, move.card) != -1
+	match move.type:
+		Move.Type.ANNOUNCE:
+			return available_announcement(move.player) != null
+		Move.Type.DECLINE:
+			return tap_chain != null
+		Move.Type.PLAY:
+			return tap_chain == null and _holds_card(move.player, move.card)
+		Move.Type.TAP:
+			return _holds_card(move.player, move.card) and can_tap(move.player, move.card)
+		Move.Type.COUNTER:
+			return (
+				tap_chain != null
+				and _holds_card(move.player, move.card)
+				and move.card.rank == tap_chain.rank
+			)
+	return false
 
 
 ## Applies a move and returns a MoveResult describing what happened. An illegal
@@ -248,8 +309,15 @@ func is_legal(move: Move) -> bool:
 func apply_move(move: Move) -> MoveResult:
 	if not is_legal(move):
 		return MoveResult.illegal("Illegal move: %s" % [move])
-	if move.type == Move.Type.ANNOUNCE:
-		return _apply_announce()
+	match move.type:
+		Move.Type.ANNOUNCE:
+			return _apply_announce()
+		Move.Type.TAP:
+			return _apply_tap(move)
+		Move.Type.COUNTER:
+			return _apply_counter(move)
+		Move.Type.DECLINE:
+			return _apply_decline()
 	return _apply_play(move)
 
 
@@ -259,29 +327,23 @@ func _apply_announce() -> MoveResult:
 	var announcement := available_announcement(current_player)
 	announcements.append(announcement)
 	_announcement_by_seat[current_player] = announcement
-	var result := MoveResult.new()
-	result.kind = Move.Type.ANNOUNCE
-	result.player = current_player
+	var result := _new_result(Move.Type.ANNOUNCE, current_player, null)
 	result.announcement = announcement
 	return result
 
 
 func _apply_play(move: Move) -> MoveResult:
 	var seat := current_player
-	var hand: Array[Card] = hands[seat]
-	var hand_index := _index_of(hand, move.card)
-	var played: Card = hand[hand_index]  # use our own instance, not the caller's
-	hand.remove_at(hand_index)
-
-	var result := MoveResult.new()
-	result.player = seat
-	result.played = played
-	result.was_last_hand = is_last_hand
+	var played := _remove_from_hand(seat, move.card)
+	var result := _new_result(Move.Type.PLAY, seat, played)
 
 	var taken := RondaRules.find_capture(played, table)
 	if taken.is_empty():
 		table.append(played)  # no pair: the card is thrown onto the table
+		_last_throw = played
+		_last_throw_seat = seat
 	else:
+		_last_throw = null
 		for c in taken:
 			table.erase(c)
 		var pile: Array[Card] = captured[side_of(seat)]
@@ -289,23 +351,115 @@ func _apply_play(move: Move) -> MoveResult:
 		pile.append_array(taken)
 		last_capturer = seat
 		result.was_capture = true
+		result.capturer = seat
 		result.captured_cards = taken
-		result.cleared_table = table.is_empty()
-		if result.cleared_table and not is_last_hand:
-			_award(side_of(seat), RondaRules.MISSA_POINTS, "Missa", result)
+		_check_missa(seat, result)
 
 	# Must happen before a possible re-deal, which resets the per-deal tracking.
 	_register_play(seat, played, result)
 
 	current_player = next_player(seat)
-
-	if _all_hands_empty():
-		if talon.is_empty():
-			_finish_round(result)
-		else:
-			_deal_hands(RondaRules.HAND_SIZE)
-			result.new_hands_dealt = true
+	_check_deal_end(result)
 	return result
+
+
+## Starts a tap: the thrown card leaves the table and, with the tapping card,
+## forms the stack that the next players may add to.
+func _apply_tap(move: Move) -> MoveResult:
+	var seat := current_player
+	var played := _remove_from_hand(seat, move.card)
+	var result := _new_result(Move.Type.TAP, seat, played)
+
+	var thrown := _last_throw
+	table.erase(thrown)
+	tap_chain = TapChain.new(thrown.rank)
+	tap_chain.add(thrown, _last_throw_seat)
+	tap_chain.add(played, seat)
+	_last_throw = null
+
+	_register_play(seat, played, result)
+	_after_layer(seat, result)
+	return result
+
+
+## Adds a card on top of the stack (Khamsa, then Aachra).
+func _apply_counter(move: Move) -> MoveResult:
+	var seat := current_player
+	var played := _remove_from_hand(seat, move.card)
+	var result := _new_result(Move.Type.COUNTER, seat, played)
+	tap_chain.add(played, seat)
+	_register_play(seat, played, result)
+	_after_layer(seat, result)
+	return result
+
+
+## Lets the tap go: the stack is settled for the player who laid the last card,
+## and the decliner then plays a normal turn (the turn does not advance).
+func _apply_decline() -> MoveResult:
+	var result := _new_result(Move.Type.DECLINE, current_player, null)
+	_resolve_chain(result)
+	return result
+
+
+## Called after a card has been laid on the stack. The chain waits when the next
+## player can answer, and is settled at once when nobody can.
+func _after_layer(seat: int, result: MoveResult) -> void:
+	current_player = next_player(seat)
+	if (
+		tap_chain.level() < RondaRules.MAX_TAP_LEVEL
+		and _holds_rank(current_player, tap_chain.rank)
+	):
+		result.tap_pending = true
+		return
+	_resolve_chain(result)
+	_check_deal_end(result)
+
+
+## Settles the tap: the player who laid the last card scores and collects the
+## whole stack plus the run of table cards lying directly above its rank.
+func _resolve_chain(result: MoveResult) -> void:
+	var chain := tap_chain
+	tap_chain = null
+	var scorer := chain.last_layer_seat()
+	var level := chain.level()
+
+	var run := RondaRules.find_run_above(chain.rank, table)
+	for c in run:
+		table.erase(c)
+	var pile: Array[Card] = captured[side_of(scorer)]
+	pile.append_array(chain.stack)
+	pile.append_array(run)
+	last_capturer = scorer
+
+	result.was_capture = true
+	result.capturer = scorer
+	result.chain_resolved = true
+	result.chain_level = level
+	for c in chain.stack:
+		if result.played == null or c.id() != result.played.id():
+			result.captured_cards.append(c)
+	result.captured_cards.append_array(run)
+
+	_award(side_of(scorer), RondaRules.TAP_POINTS[level], RondaRules.TAP_NAMES[level], result)
+	_check_missa(scorer, result)
+
+
+## Clearing the table scores a missa, except on the last hand.
+func _check_missa(seat: int, result: MoveResult) -> void:
+	result.cleared_table = table.is_empty()
+	if result.cleared_table and not is_last_hand:
+		_award(side_of(seat), RondaRules.MISSA_POINTS, "Missa", result)
+
+
+## When every hand is empty: deal again, or finish the round if the talon is empty.
+func _check_deal_end(result: MoveResult) -> void:
+	if not _all_hands_empty():
+		return
+	if talon.is_empty():
+		_finish_round(result)
+	else:
+		_deal_hands(RondaRules.HAND_SIZE)
+		result.new_hands_dealt = true
 
 
 func _finish_round(result: MoveResult) -> void:
@@ -323,6 +477,40 @@ func _finish_round(result: MoveResult) -> void:
 	# Every card beyond the threshold is worth a point.
 	for side in side_count():
 		_award(side, card_points(side), "%d cards" % cards_won(side), result)
+
+
+func _new_result(kind: int, seat: int, played: Card) -> MoveResult:
+	var result := MoveResult.new()
+	result.kind = kind
+	result.player = seat
+	result.played = played
+	result.was_last_hand = is_last_hand
+	return result
+
+
+## Removes a card from a hand and returns the instance the hand really held
+## (the caller's Card object may be a different instance of the same card).
+func _remove_from_hand(seat: int, card: Card) -> Card:
+	var hand: Array[Card] = hands[seat]
+	var index := _index_of(hand, card)
+	var own: Card = hand[index]
+	hand.remove_at(index)
+	return own
+
+
+func _holds_card(seat: int, card: Card) -> bool:
+	if card == null:
+		return false
+	var hand: Array[Card] = hands[seat]
+	return _index_of(hand, card) != -1
+
+
+func _holds_rank(seat: int, rank: int) -> bool:
+	var hand: Array[Card] = hands[seat]
+	for c in hand:
+		if c.rank == rank:
+			return true
+	return false
 
 
 func _all_hands_empty() -> bool:
@@ -344,8 +532,9 @@ static func _index_of(cards: Array[Card], card: Card) -> int:
 # Announcements and points
 # ---------------------------------------------------------------------------
 
-## Bookkeeping after every card played: spots a hidden ronda and settles the
-## announcements once everybody has played a first card.
+## Bookkeeping after every card played (also cards laid on a tap stack): spots a
+## hidden ronda and settles the announcements once everybody has played a first
+## card.
 func _register_play(seat: int, played: Card, result: MoveResult) -> void:
 	# A pair that was never announced comes to light when the player has played
 	# two cards of the same rank from the same deal.
@@ -445,6 +634,9 @@ func clone() -> RoundState:
 	copy.finished = finished
 	copy.table = Card.copy_array(table)
 	copy.talon = talon.clone()
+	copy.tap_chain = tap_chain.clone() if tap_chain != null else null
+	copy._last_throw = _last_throw
+	copy._last_throw_seat = _last_throw_seat
 	for seat in player_count:
 		copy.hands[seat] = Card.copy_array(hands[seat])
 		copy._announcement_by_seat[seat] = _announcement_by_seat[seat]
@@ -471,6 +663,8 @@ func debug_string() -> String:
 		% [current_player, dealer, talon.size(), is_last_hand, finished]
 	)
 	lines.append("Table: %s" % _cards_to_string(table))
+	if tap_chain != null:
+		lines.append("Tap stack (level %d): %s" % [tap_chain.level(), _cards_to_string(tap_chain.stack)])
 	for seat in player_count:
 		lines.append("Hand %d: %s" % [seat, _cards_to_string(hands[seat])])
 	for side in side_count():

@@ -16,6 +16,9 @@ extends AIPlayer
 ## so the window freezes briefly. Lower the time (or max_samples) if that bothers
 ## you.
 ##
+## The candidates include tapping and answering a tap; simulated opponents always
+## answer a tap when they can, which makes the AI cautious about tapping.
+##
 ## Not used yet: an opponent's announcement (they hold a pair or three of a kind
 ## somewhere in their hand) is ignored when dealing the possible worlds.
 
@@ -42,7 +45,11 @@ func choose_move(state: RoundState, rng: RandomNumberGenerator) -> Move:
 	var announce := find_announce(moves)
 	if announce != null:
 		return announce
-	var plays := play_moves(moves)
+	# Every move except announcing is a candidate: plays, taps, counters, declines.
+	var plays: Array[Move] = []
+	for move in moves:
+		if move.type != Move.Type.ANNOUNCE:
+			plays.append(move)
 	if plays.size() == 1:
 		return plays[0]
 
@@ -117,22 +124,32 @@ func _rollout(simulation: RoundState, seat: int, rollout_seed: int) -> float:
 	return _evaluate(simulation, seat)
 
 
-## Cheap stand-in for a player during simulations: announce, else take the
-## biggest capture, else throw a random card.
+## Cheap stand-in for a player during simulations: announce, always answer a tap
+## when possible, otherwise take the biggest capture, otherwise throw a random
+## card. It never taps.
 func _fast_policy(simulation: RoundState, rng: RandomNumberGenerator) -> Move:
 	var moves := simulation.legal_moves()
 	var best: Move = null
 	var best_taken := 0
+	var plays: Array[Move] = []
+	var decline: Move = null
 	for move in moves:
-		if move.type == Move.Type.ANNOUNCE:
-			return move
-		var taken := RondaRules.find_capture(move.card, simulation.table).size()
-		if taken > best_taken:
-			best_taken = taken
-			best = move
+		match move.type:
+			Move.Type.ANNOUNCE, Move.Type.COUNTER:
+				return move
+			Move.Type.DECLINE:
+				decline = move
+			Move.Type.PLAY:
+				plays.append(move)
+				var taken := RondaRules.find_capture(move.card, simulation.table).size()
+				if taken > best_taken:
+					best_taken = taken
+					best = move
 	if best != null:
 		return best
-	return moves[rng.randi_range(0, moves.size() - 1)]
+	if not plays.is_empty():
+		return plays[rng.randi_range(0, plays.size() - 1)]
+	return decline
 
 
 ## My side's points and cards minus the average of the other sides'.

@@ -24,6 +24,9 @@ func _init(state: RoundState, p_seat: int) -> void:
 		known[c.id()] = true
 	for c in state.table:
 		known[c.id()] = true
+	if state.tap_chain != null:
+		for c in state.tap_chain.stack:   # cards stacked by a tap are face up too
+			known[c.id()] = true
 	for side in state.side_count():
 		for c in state.captured_by_side(side):
 			known[c.id()] = true

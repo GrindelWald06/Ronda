@@ -91,6 +91,36 @@ func human_announce() -> void:
 	_apply(Move.announce(human_seat))
 
 
+## Called by the view when the human taps a just-thrown card (Bount).
+func human_tap(card: Card) -> void:
+	if _busy or state == null or state.finished:
+		return
+	if state.current_player != human_seat:
+		return
+	_apply(Move.tap(human_seat, card))
+
+
+## Called by the view when the human adds a card to a tap stack they're
+## answering (Khamsa / Aachra).
+func human_counter(card: Card) -> void:
+	if _busy or state == null or state.finished:
+		return
+	if state.current_player != human_seat:
+		return
+	_apply(Move.counter(human_seat, card))
+
+
+## Called by the view when the human lets a tap stack go. The round state does
+## NOT advance the turn after a decline: the same player carries on with a
+## normal move, so awaiting_human fires again once this is presented.
+func human_decline() -> void:
+	if _busy or state == null or state.finished:
+		return
+	if state.current_player != human_seat:
+		return
+	_apply(Move.decline(human_seat))
+
+
 func _advance() -> void:
 	if state.finished:
 		match_state.finish_round()

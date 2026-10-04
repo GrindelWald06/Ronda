@@ -7,6 +7,13 @@ const WIN_SCORE := 41
 const TRINGLA_POINTS := 5
 ## Clearing the whole table (not worth anything on the last hand).
 const MISSA_POINTS := 1
+
+## Tapping: how many cards are stacked on the tapped rank -> points for the
+## player who laid the last one. Two cards is the Bount itself, the third card
+## is the Khamsa and the fourth the Aachra.
+const TAP_POINTS := {2: 1, 3: 5, 4: 10}
+const TAP_NAMES := {2: "Bount", 3: "Khamsa", 4: "Aachra"}
+const MAX_TAP_LEVEL := 4
 ## Penalty for hiding a ronda that comes to light later in the deal.
 const HIDDEN_RONDA_PENALTY := 5
 const MIN_PLAYERS := 2
@@ -49,6 +56,21 @@ static func find_capture(played: Card, table: Array[Card]) -> Array[Card]:
 		taken.append(by_order[o])
 		o += 1
 	return taken
+
+
+## The run of table cards lying directly above `rank` in the sequence. This is
+## the "cards above" part of a capture, used when a tap stack is collected (the
+## stack itself replaces the paired card).
+static func find_run_above(rank: int, table: Array[Card]) -> Array[Card]:
+	var run: Array[Card] = []
+	var by_order := {}
+	for c in table:
+		by_order[c.order_index()] = c
+	var o := Card.RANK_ORDER.find(rank) + 1
+	while by_order.has(o):
+		run.append(by_order[o])
+		o += 1
+	return run
 
 
 # ---------------------------------------------------------------------------
